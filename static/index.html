@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Traductor profesional de documentos PDF, DOCX y PPTX. Conserva imágenes, tablas y formato original.">
+    <title>DocuTransPro — Traductor de Documentos</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <!-- Animated background -->
+    <div class="bg-orbs">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+    </div>
+
+    <div class="app-wrapper">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <div class="logo-icon">
+                    <i class="fa-solid fa-language"></i>
+                </div>
+                <div class="logo-text">
+                    <span class="logo-main">DocuTrans<span class="accent">Pro</span></span>
+                    <span class="logo-sub">Traductor de Documentos</span>
+                </div>
+            </div>
+            <div class="header-badge">
+                <i class="fa-solid fa-circle-check"></i>
+                <span>100% Gratuito</span>
+            </div>
+        </header>
+
+        <!-- Main card -->
+        <main class="card">
+
+            <!-- Language selectors -->
+            <div class="lang-row">
+                <div class="lang-group">
+                    <label class="lang-label" for="sourceLang">
+                        <i class="fa-solid fa-globe"></i> Idioma origen
+                    </label>
+                    <div class="select-wrapper">
+                        <select id="sourceLang">
+                            <option value="auto">🔍 Detectar automáticamente</option>
+                            <option value="en">🇬🇧 Inglés</option>
+                            <option value="fr">🇫🇷 Francés</option>
+                            <option value="de">🇩🇪 Alemán</option>
+                            <option value="it">🇮🇹 Italiano</option>
+                            <option value="pt">🇧🇷 Portugués</option>
+                            <option value="zh-CN">🇨🇳 Chino (Simplificado)</option>
+                            <option value="ja">🇯🇵 Japonés</option>
+                            <option value="ko">🇰🇷 Coreano</option>
+                            <option value="ru">🇷🇺 Ruso</option>
+                            <option value="ar">🇸🇦 Árabe</option>
+                            <option value="nl">🇳🇱 Neerlandés</option>
+                            <option value="pl">🇵🇱 Polaco</option>
+                            <option value="es">🇪🇸 Español</option>
+                        </select>
+                        <i class="fa-solid fa-chevron-down select-arrow"></i>
+                    </div>
+                </div>
+
+                <button class="swap-btn" id="swapLangs" title="Intercambiar idiomas">
+                    <i class="fa-solid fa-arrow-right-arrow-left"></i>
+                </button>
+
+                <div class="lang-group">
+                    <label class="lang-label" for="targetLang">
+                        <i class="fa-solid fa-flag"></i> Traducir a
+                    </label>
+                    <div class="select-wrapper">
+                        <select id="targetLang">
+                            <option value="es" selected>🇪🇸 Español</option>
+                            <option value="en">🇬🇧 Inglés</option>
+                            <option value="fr">🇫🇷 Francés</option>
+                            <option value="de">🇩🇪 Alemán</option>
+                            <option value="it">🇮🇹 Italiano</option>
+                            <option value="pt">🇧🇷 Portugués</option>
+                            <option value="zh-CN">🇨🇳 Chino (Simplificado)</option>
+                            <option value="ja">🇯🇵 Japonés</option>
+                            <option value="ko">🇰🇷 Coreano</option>
+                            <option value="ru">🇷🇺 Ruso</option>
+                            <option value="ar">🇸🇦 Árabe</option>
+                            <option value="nl">🇳🇱 Neerlandés</option>
+                            <option value="pl">🇵🇱 Polaco</option>
+                        </select>
+                        <i class="fa-solid fa-chevron-down select-arrow"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Drop zone -->
+            <div class="drop-zone" id="dropZone">
+                <input type="file" id="fileInput" accept=".pdf,.docx,.pptx" hidden>
+                <div class="drop-content" id="dropContent">
+                    <div class="drop-icon-wrap">
+                        <i class="fa-solid fa-cloud-arrow-up drop-icon"></i>
+                    </div>
+                    <h2 class="drop-title">Arrastra tu documento aquí</h2>
+                    <p class="drop-sub">o haz clic para seleccionar un archivo</p>
+                    <div class="format-badges">
+                        <span class="badge badge-pdf"><i class="fa-solid fa-file-pdf"></i> PDF</span>
+                        <span class="badge badge-word"><i class="fa-solid fa-file-word"></i> DOCX</span>
+                        <span class="badge badge-ppt"><i class="fa-solid fa-file-powerpoint"></i> PPTX</span>
+                    </div>
+                    <p class="drop-note">Imágenes, tablas y formato 100% preservados</p>
+                </div>
+            </div>
+
+            <!-- File selected info -->
+            <div class="file-info hidden" id="fileInfo">
+                <div class="file-icon-wrap" id="fileIconWrap">
+                    <i class="fa-solid fa-file-word" id="fileTypeIcon"></i>
+                </div>
+                <div class="file-meta">
+                    <span class="file-name" id="fileName">documento.docx</span>
+                    <span class="file-size" id="fileSize">—</span>
+                </div>
+                <button class="remove-btn" id="removeFileBtn" title="Quitar archivo">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <!-- Translate button -->
+            <button class="translate-btn" id="translateBtn" disabled>
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+                <span>Traducir Documento</span>
+            </button>
+
+            <!-- Progress -->
+            <div class="progress-area hidden" id="statusArea">
+                <div class="progress-header">
+                    <div class="spinner"></div>
+                    <p id="statusText">Iniciando traducción...</p>
+                </div>
+                <div class="progress-track">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <p class="progress-hint">Esto puede tardar 30–90 s según el tamaño del archivo</p>
+            </div>
+
+            <!-- Download -->
+            <div class="download-area hidden" id="downloadArea">
+                <div class="success-banner">
+                    <i class="fa-solid fa-circle-check"></i>
+                    <p>¡Traducción completada con éxito!</p>
+                </div>
+                <a id="downloadLink" class="download-btn">
+                    <i class="fa-solid fa-file-arrow-down"></i>
+                    <span id="downloadLabel">Descargar documento traducido</span>
+                </a>
+                <button class="new-btn" id="newTranslationBtn">
+                    <i class="fa-solid fa-rotate-left"></i> Traducir otro documento
+                </button>
+            </div>
+
+        </main>
+
+        <!-- Features -->
+        <section class="features">
+            <div class="feature">
+                <i class="fa-solid fa-shield-halved"></i>
+                <span>Formato preservado</span>
+            </div>
+            <div class="feature">
+                <i class="fa-solid fa-image"></i>
+                <span>Imágenes intactas</span>
+            </div>
+            <div class="feature">
+                <i class="fa-solid fa-table"></i>
+                <span>Tablas conservadas</span>
+            </div>
+            <div class="feature">
+                <i class="fa-solid fa-bolt"></i>
+                <span>Procesamiento rápido</span>
+            </div>
+        </section>
+
+        <footer class="footer">
+            <p>DocuTransPro &copy; 2025 · Traducción automática gratuita · Sin límites de uso</p>
+        </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

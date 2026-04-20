@@ -3,16 +3,30 @@ import shutil
 import tempfile
 import zipfile
 import re
-from xml.etree import ElementTree as ET
+import time
+from lxml import etree
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pdf2docx import Converter
 from deep_translator import GoogleTranslator
 
+# ─────────────────────────────────────────────
+#  Namespaces OOXML
+# ─────────────────────────────────────────────
+WORD_NS  = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+DRAW_NS  = "http://schemas.openxmlformats.org/drawingml/2006/main"
+PPTX_NS  = "http://schemas.openxmlformats.org/presentationml/2006/main"
+
+# Tags que contienen texto en Word / PowerPoint
+TEXT_TAGS = {
+    f"{{{WORD_NS}}}t",   # Word: <w:t>
+    f"{{{DRAW_NS}}}t",   # DrawingML: <a:t> (shapes en DOCX y PPTX)
+}
+
 app = FastAPI(title="DocuTransPro API")
 
-# Configuración de CORS para que tu web en GitHub pueda hablar con Render
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,121 +35,191 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-async def root():
-    """Ruta de bienvenida para confirmar que el servidor está vivo"""
-    return {
-        "status": "online",
-        "message": "Servidor DocuTransPro listo. Envía archivos a /translate para procesar."
-    }
+# ─────────────────────────────────────────────
+#  Servir archivos estáticos del frontend
+# ─────────────────────────────────────────────
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-def translate_texts_batch(texts, source_lang, target_lang, batch_size=40):
-    """Motor de traducción por lotes usando Google Translate gratuito"""
+@app.get("/", response_class=HTMLResponse)
+async def serve_frontend():
+    """Sirve la interfaz web directamente desde Render."""
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_path):
+        with open(index_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse(content="<h1>DocuTransPro API - Online ✅</h1><p>Sube archivos a /translate</p>")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+# ─────────────────────────────────────────────
+#  Motor de traducción
+# ─────────────────────────────────────────────
+def translate_batch(texts: list[str], source: str, target: str) -> list[str]:
+    """Traduce una lista de textos en lotes respetando el límite de la API."""
     if not texts:
         return []
-    
-    # CORRECCIÓN: Convertimos a minúsculas para que la librería no falle
-    translator = GoogleTranslator(source=source_lang.lower(), target=target_lang.lower())
-    translated_texts = []
-    
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i+batch_size]
-        batch_translated = []
-        for t in batch:
-            if t and t.strip() and re.search('[a-zA-Z]', t):
+
+    src = source.lower() if source and source != "auto" else "auto"
+    tgt = target.lower()
+
+    translator = GoogleTranslator(source=src, target=tgt)
+    results = []
+
+    # Máximo ~4500 chars por llamada para no superar el límite de URL
+    MAX_CHARS = 4500
+    batch: list[str] = []
+    batch_chars = 0
+    indices: list[int] = []          # índices en 'texts' que forman el batch actual
+    translated: dict[int, str] = {}  # mapa índice → traducción
+
+    def flush_batch():
+        if not batch:
+            return
+        combined = "\n||||\n".join(batch)
+        try:
+            result = translator.translate(combined)
+            parts = result.split("\n||||\n") if result else []
+            for j, idx in enumerate(indices):
+                translated[idx] = parts[j].strip() if j < len(parts) else texts[idx]
+        except Exception:
+            for idx in indices:
+                translated[idx] = texts[idx]
+        batch.clear()
+        indices.clear()
+
+    for i, text in enumerate(texts):
+        if not text or not text.strip():
+            translated[i] = text
+            continue
+        # Si el texto solo tiene números/símbolos, no traducir
+        if not re.search(r'[a-zA-ZÀ-ÿ]', text):
+            translated[i] = text
+            continue
+
+        t_len = len(text)
+        if batch_chars + t_len + 6 > MAX_CHARS:
+            flush_batch()
+            batch_chars = 0
+            time.sleep(0.3)   # pausa cortés con la API gratuita
+
+        batch.append(text)
+        indices.append(i)
+        batch_chars += t_len + 6
+
+    flush_batch()
+
+    return [translated.get(i, texts[i]) for i in range(len(texts))]
+
+
+# ─────────────────────────────────────────────
+#  Procesador DOCX / PPTX
+# ─────────────────────────────────────────────
+def _collect_and_replace_xml(xml_bytes: bytes, source: str, target: str) -> bytes:
+    """Parsea el XML de un archivo interno, reemplaza el texto y devuelve los bytes modificados."""
+    try:
+        root = etree.fromstring(xml_bytes)
+    except etree.XMLSyntaxError:
+        return xml_bytes
+
+    nodes = [elem for elem in root.iter() if elem.tag in TEXT_TAGS and elem.text and elem.text.strip()]
+    if not nodes:
+        return xml_bytes
+
+    originals = [n.text for n in nodes]
+    translated = translate_batch(originals, source, target)
+
+    for node, new_text in zip(nodes, translated):
+        if new_text:
+            node.text = new_text
+
+    return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+
+def process_office_document(input_path: str, output_path: str, ext: str, source: str, target: str):
+    """Lee el DOCX/PPTX como ZIP, traduce solo los XML con texto y reconstruye el archivo."""
+    with zipfile.ZipFile(input_path, "r") as zin, \
+         zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zout:
+
+        for item in zin.infolist():
+            raw = zin.read(item.filename)
+
+            should_translate = False
+            if ext == "docx":
+                # Documento principal + headers/footers + cuadros de texto
+                if (item.filename == "word/document.xml"
+                        or item.filename.startswith("word/header")
+                        or item.filename.startswith("word/footer")
+                        or (item.filename.startswith("word/") and item.filename.endswith(".xml")
+                            and "drawing" not in item.filename)):
+                    should_translate = True
+            elif ext == "pptx":
+                # Todas las diapositivas y notas
+                if (item.filename.startswith("ppt/slides/") and item.filename.endswith(".xml")) \
+                        or (item.filename.startswith("ppt/notesSlides/") and item.filename.endswith(".xml")):
+                    should_translate = True
+
+            if should_translate:
                 try:
-                    res = translator.translate(t)
-                    batch_translated.append(res if res else t)
+                    new_raw = _collect_and_replace_xml(raw, source, target)
+                    zout.writestr(item, new_raw)
                 except Exception:
-                    batch_translated.append(t)
+                    zout.writestr(item, raw)
             else:
-                batch_translated.append(t)
-        translated_texts.extend(batch_translated)
-        
-    return translated_texts
+                zout.writestr(item, raw)
 
-def process_xml_file(zip_ref, xml_path, target_tag, source_lang, target_lang):
-    """Procesa los archivos XML internos de Word y PowerPoint para traducir el texto sin romper el diseño"""
-    with zip_ref.open(xml_path) as xml_file:
-        xml_content = xml_file.read()
-    
-    # Registramos namespaces comunes para evitar errores de formato
-    ET.register_namespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main')
-    ET.register_namespace('a', 'http://schemas.openxmlformats.org/drawingml/2006/main')
-    
-    root = ET.fromstring(xml_content)
-    valid_nodes = []
-    texts_to_translate = []
-    
-    for elem in root.iter():
-        if elem.tag.endswith(target_tag) and elem.text:
-            valid_nodes.append(elem)
-            texts_to_translate.append(elem.text)
-            
-    if texts_to_translate:
-        translated_texts = translate_texts_batch(texts_to_translate, source_lang, target_lang)
-        for i, node in enumerate(valid_nodes):
-            if i < len(translated_texts):
-                node.text = translated_texts[i]
-                
-    return ET.tostring(root, encoding='utf-8', xml_declaration=True)
 
-def process_office_document(input_path, output_path, ext, source_lang, target_lang):
-    """Maneja la apertura y reconstrucción del archivo DOCX o PPTX (archivos ZIP)"""
-    shutil.copy2(input_path, output_path)
-    
-    with zipfile.ZipFile(input_path, 'r') as zin:
-        with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zout:
-            for item in zin.infolist():
-                # Procesar Word
-                if ext == 'docx' and item.filename == 'word/document.xml':
-                    modified_xml = process_xml_file(zin, item.filename, 't', source_lang, target_lang)
-                    zout.writestr(item, modified_xml)
-                # Procesar PowerPoint (diapositivas)
-                elif ext == 'pptx' and item.filename.startswith('ppt/slides/slide') and item.filename.endswith('.xml'):
-                    modified_xml = process_xml_file(zin, item.filename, 't', source_lang, target_lang)
-                    zout.writestr(item, modified_xml)
-                else:
-                    zout.writestr(item, zin.read(item.filename))
-
+# ─────────────────────────────────────────────
+#  Endpoint de traducción
+# ─────────────────────────────────────────────
 @app.post("/translate")
 async def translate_document(
     file: UploadFile = File(...),
     source_lang: str = Form("auto"),
-    target_lang: str = Form("es")
+    target_lang: str = Form("es"),
 ):
-    """Endpoint principal que recibe PDF, Word o PPT y los traduce"""
-    ext = file.filename.split('.')[-1].lower()
+    ext = file.filename.rsplit(".", 1)[-1].lower()
+    if ext not in ("pdf", "docx", "pptx"):
+        raise HTTPException(status_code=400, detail=f"Formato '{ext}' no soportado. Usa PDF, DOCX o PPTX.")
+
     temp_dir = tempfile.mkdtemp()
-    
     try:
+        # Guardar archivo subido
         input_path = os.path.join(temp_dir, file.filename)
-        with open(input_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
-        final_ext = 'docx' if ext == 'pdf' else ext
-        output_filename = f"traducido_{file.filename.rsplit('.', 1)[0]}.{final_ext}"
-        output_path = os.path.join(temp_dir, output_filename)
-        
-        # LÓGICA ESPECIAL PARA PDF
-        if ext == 'pdf':
-            temp_docx_path = os.path.join(temp_dir, "temp.docx")
-            # Convertimos el PDF a Word manteniendo todo el diseño
+        with open(input_path, "wb") as buf:
+            shutil.copyfileobj(file.file, buf)
+
+        # Nombre del archivo de salida
+        base_name = file.filename.rsplit(".", 1)[0]
+        final_ext  = "docx" if ext == "pdf" else ext
+        output_filename = f"{base_name}_traducido.{final_ext}"
+        output_path     = os.path.join(temp_dir, output_filename)
+
+        if ext == "pdf":
+            # 1. PDF → DOCX (conserva imágenes y layout)
+            temp_docx = os.path.join(temp_dir, "converted.docx")
             cv = Converter(input_path)
-            cv.convert(temp_docx_path, start=0, end=None)
+            cv.convert(temp_docx, start=0, end=None)
             cv.close()
-            # Ahora traducimos ese Word resultante
-            process_office_document(temp_docx_path, output_path, 'docx', source_lang, target_lang)
+            # 2. Traducir el DOCX generado
+            process_office_document(temp_docx, output_path, "docx", source_lang, target_lang)
         else:
-            # Procesar directamente si ya es Word o PowerPoint
             process_office_document(input_path, output_path, ext, source_lang, target_lang)
-            
+
         return FileResponse(
-            path=output_path, 
+            path=output_path,
             filename=output_filename,
-            media_type='application/octet-stream'
+            media_type="application/octet-stream",
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    # Nota: no eliminamos temp_dir aquí porque FileResponse aún necesita el archivo.
+    # Render limpiará el /tmp automáticamente.

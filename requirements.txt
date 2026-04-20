@@ -1,5 +1,8 @@
 fastapi
-uvicorn
+uvicorn[standard]
+gunicorn
 python-multipart
+lxml
 pdf2docx
 deep-translator
+aiofiles
